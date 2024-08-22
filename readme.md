@@ -37,10 +37,10 @@ The Personality Alignment with Personality Inventories (PAPI) dataset is central
 
 ### Download All Dataset
 
-We have released the PAPI dataset in [Google Drive](https://drive.google.com/file/d/1KRhpTCwSMS47GYnmHwYRPnmxF6FOGYTf/view?usp=sharing, https://drive.google.com/file/d/1V0JkJL3KMn6ZpOqOFVkfbLZD1HqQJgS5/view?usp=sharing) and Huggingface!
+We have released the PAPI dataset in (Google Drive)[https://drive.google.com/file/d/1KRhpTCwSMS47GYnmHwYRPnmxF6FOGYTf/view?usp=sharing, https://drive.google.com/file/d/1V0JkJL3KMn6ZpOqOFVkfbLZD1HqQJgS5/view?usp=sharing] and Huggingface 🤗! 
 
-- **PAPI-300K**: the 300K datasets for PAPI, it include IPIP-NEO-120 and IPIP-NEO-300 Questionnaire, with 300K Subject's answer.
-- **PAPA-120-600K**: the 600K datasets for PAPI, but it ONLY include IPIP-NEO-120 Questionnaire.
+- **PAPI-300K**: the 300K datasets for PAPI, it include IPIP-NEO-120 and IPIP-NEO-300 Questionnaire, with 300K Subject's answer. [Huggingface 🤗](https://huggingface.co/datasets/WestlakeNLP/PAPI-300K)
+- **PAPA-120-600K**: the 600K datasets for PAPI, but it ONLY include IPIP-NEO-120 Questionnaire. [Huggingface 🤗](https://huggingface.co/datasets/WestlakeNLP/PAPI-120-600K)
 
 
 ### Data Permissions
