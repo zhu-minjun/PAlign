@@ -7,7 +7,7 @@ import numpy as np
 
 data_size = 300
 
-df = pd.read_csv('../PAPI/MPI300.csv')
+df = pd.read_csv('../PAPI/IPIP_NEO_120.csv') # download from https://drive.google.com/file/d/1KRhpTCwSMS47GYnmHwYRPnmxF6FOGYTf/view?usp=sharing
 features = df.columns[df.columns.str.startswith('i')]
 X = df[features]
 
