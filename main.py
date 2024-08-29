@@ -10,7 +10,6 @@ import re
 from pprint import pprint
 from PAlign.llama_pas import get_model
 from copy import deepcopy
-from baseline_utils import process_dpo
 from baseline_utils import process_answers, process_few_shot, calc_mean_and_var, process_personality_prompt
 
 device = torch.device("cuda:0") if torch.cuda.is_available() else "cpu"
