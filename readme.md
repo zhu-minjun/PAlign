@@ -104,7 +104,7 @@ Explore the future of personalized AI with PAS, and let's build models that trul
 This is one of our "causal intervention" projects. If you're hungry for more AI safety goodness, check out these related projects:
 
 - [SafetyLock](https://github.com/zhu-minjun/SafetyLock) (Stay safe, stay aligned, and may your LLMs always respond appropriately! 🦜✨)
-- 
+
 Happy Aligning!
 
 
