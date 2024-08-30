@@ -4,7 +4,7 @@ import os
 import pandas as pd
 import torch
 import numpy as np
-from tqdm import tqdm,trange
+from tqdm import tqdm, trange
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import re
 from pprint import pprint
@@ -15,7 +15,6 @@ from baseline_utils import process_answers, process_few_shot, calc_mean_and_var,
 device = torch.device("cuda:0") if torch.cuda.is_available() else "cpu"
 global_result = {}
 global_cnt = {}
-
 
 # Define constants
 SCORES = {
@@ -31,7 +30,6 @@ SCORES_BACK = {
     0: 'Unknown'
 }
 
-
 system_prompt = "You are a helpful, honest and concise assistant."
 
 # Templates for personality assessment
@@ -44,6 +42,7 @@ Options:
 (D). Moderately Inaccurate
 (E). Very Inaccurate
 """
+
 
 def prompt_to_tokens(tokenizer, system_prompt, instruction, model_output, model_file):
     """
@@ -70,10 +69,11 @@ def prompt_to_tokens(tokenizer, system_prompt, instruction, model_output, model_
         dialog_tokens = f"{B_INST} {dialog_content.strip()} {E_INST} {model_output.strip()}"
         return tokenizer(dialog_tokens).input_ids
 
+
 def getItems(filename):
     """
     Load data from files.
-    
+
     Test-set.json: 300 samples for Test, if you need to load more, you can download from huggingface (https://huggingface.co/datasets/WestlakeNLP/PAPI-300K)
     mpi_300_split.json: The original IPIP-NEO-300 questionnaire includes the IPIP-NEO-120 and the remaining 180 questions. 
         Existing psychological research indicates that the IPIP-NEO-120 is sufficient to represent a person's personality traits. 
@@ -99,7 +99,7 @@ def generateAnswer(tokenizer, model, dataset, template, scores=SCORES, system_pr
     for batch in range(0, len(questions), batch_size):
         with torch.no_grad():
             outputs = model.generate(
-                [prompt_to_tokens(tokenizer, system_prompt, template.format(prompt), 'Option', model_file) 
+                [prompt_to_tokens(tokenizer, system_prompt, template.format(prompt), 'Option', model_file)
                  for prompt in questions[batch:batch + batch_size]],
                 max_new_tokens=15,
             )
@@ -112,6 +112,7 @@ def generateAnswer(tokenizer, model, dataset, template, scores=SCORES, system_pr
 
     return answers
 
+
 def calc_mean_and_var(result):
     """
     Calculate mean and variance of results.
@@ -122,6 +123,7 @@ def calc_mean_and_var(result):
         "mean": list(sorted(mean.items(), key=lambda item: item[0])),
         "std": list(sorted(std.items(), key=lambda item: item[0])),
     }
+
 
 def from_index_to_data(train_index, test_index, text_file, dataset, dataset_set):
     """
@@ -156,7 +158,8 @@ def from_index_to_data(train_index, test_index, text_file, dataset, dataset_set)
         data.append({'train': d_train, 'test': d_test})
     return data
 
-def get_activate_layer(layer_num,activate_name):
+
+def get_activate_layer(layer_num, activate_name):
     lower_bound = layer_num // 4
     upper_bound = layer_num - lower_bound
     step = (upper_bound - lower_bound + 1) // 5
@@ -173,20 +176,21 @@ def get_activate_layer(layer_num,activate_name):
         value = lower_bound + 4 * step
     return value
 
+
 def lmean(l):
     """
     Calculate mean of a list.
     """
     return sum(l) / len(l)
 
-def process_pas(data, model, tokenizer, template, model_file):
+
+def process_pas(data, model, tokenizer, model_file):
     """
     Process data using Persona Activation Steering (PAS) method.
-    
+
     :param data: List of personality data samples
     :param model: The language model to use
     :param tokenizer: The tokenizer for the model
-    :param template: Template string for generating prompts
     :param model_file: Path to the model file
     :return: List of results for each personality sample
     """
@@ -196,22 +200,22 @@ def process_pas(data, model, tokenizer, template, model_file):
         for item in data[0]['train']:
             if item['label_ocean'] == personal:
                 personal_data.append({
-                    'question': template.format(item['text']),
+                    'question': TEMPLATE.format(item['text']),
                     'answer_matching_behavior': 'A',
                     'answer_not_matching_behavior': 'E'
                 })
 
     # Preprocess activation dataset
     all_head_wise_activations = model.preprocess_activate_dataset(personal_data)
-    
+
     results = []
     for index, sample in enumerate(tqdm(data)):
         model.reset_all()
-        
+
         # Generate system prompt from training data
         system_prompt_text = 'Here are some of your behaviors and your level of recognition towards them;' + \
                              ';'.join([f"{it['text']}:{SCORES_BACK[it['value']]}" for it in sample['train']])
-        
+
         # Prepare labels and activations for each personality trait
         labels = []
         head_wise_activations = []
@@ -238,9 +242,9 @@ def process_pas(data, model, tokenizer, template, model_file):
         for num in [0, 1, 2, 4, 6, 8]:
             model.reset_all()
             model.set_activate(activate, num)
-            answers = generateAnswer(tokenizer, model, data[0]['test'], template, 
+            answers = generateAnswer(tokenizer, model, data[0]['test'], TEMPLATE,
                                      system_prompt=system_prompt_text, model_file=model_file)
-            
+
             # Process answers and calculate results
             result = process_answers(answers, sample['test'])
             result_cache.append(result)
@@ -252,10 +256,11 @@ def process_pas(data, model, tokenizer, template, model_file):
 
     return results
 
+
 def print_and_save_results(results, mode, model_file, dataset_set):
     """
     Print and save the final results of the personality assessment.
-    
+
     Args:
     results (list): List of result dictionaries from the assessment
     mode (str): The mode of assessment used
@@ -263,7 +268,7 @@ def print_and_save_results(results, mode, model_file, dataset_set):
     dataset_set (str): The dataset set used (e.g., 'OOD')
     """
     print('*******Finally:******')
-    
+
     # Extract mean and standard deviation values
     mean = [i['mean_ver']['mean'] for i in results]
     mean_A, mean_C, mean_E, mean_N, mean_O = ([i[j][1] for i in mean] for j in range(5))
@@ -307,7 +312,8 @@ def print_and_save_results(results, mode, model_file, dataset_set):
         json.dump(log, f, ensure_ascii=False, indent=4)
 
     print(f"Results saved to {log_filename}")
-    
+
+
 def main(mode=None, model_file='', model=None, tokenizer=None, dataset_set='OOD'):
     """
     Main function to run personality assessment.
@@ -344,8 +350,8 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="mode")
-    parser.add_argument("--modes", default='PAS',help="Name of the user to greet")
-    parser.add_argument("--model_file", default='meta-llama/Meta-Llama-3-8B-Instruct',help="Name of the user to greet")
+    parser.add_argument("--modes", default='PAS', help="Name of the user to greet")
+    parser.add_argument("--model_file", default='meta-llama/Meta-Llama-3-8B-Instruct', help="Name of the user to greet")
     args = parser.parse_args()
 
     model_file = args.model_file
@@ -357,4 +363,4 @@ if __name__ == "__main__":
         tokenizer.padding_side = 'left'
 
     for mode in modes:
-        main(mode=mode,model_file=model_file,model=model,tokenizer=tokenizer,dataset_set='OOD')
+        main(mode=mode, model_file=model_file, model=model, tokenizer=tokenizer, dataset_set='OOD')
