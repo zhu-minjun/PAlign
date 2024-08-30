@@ -318,7 +318,7 @@ def main(mode=None, model_file='', model=None, tokenizer=None, dataset_set='OOD'
     """
     Main function to run personality assessment.
     """
-    dataset, text_file, train_index, test_index = getItems('IPIP')
+    dataset, text_file, train_index, test_index = getItems('PAPI')
     print("-" * 40)
     print(f"Current Prompt: {TEMPLATE}")
     results = []
