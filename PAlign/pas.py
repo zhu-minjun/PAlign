@@ -29,7 +29,7 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 from tqdm.rich import tqdm
 import matplotlib
 from baukit import Trace, TraceDict
-from modeling_llama import LlamaForCausalLM
+from PAlign.modeling_llama import LlamaForCausalLM
 from copy import deepcopy
 
 def get_model(model_name='meta-llama/Llama-2-7b-chat-hf', control_activate_name=None, control_layer=None, gamma=None, adapter=None):
@@ -48,55 +48,6 @@ def get_model(model_name='meta-llama/Llama-2-7b-chat-hf', control_activate_name=
     tokenizer: Corresponding tokenizer.
     """
 
-    class AttnWrapper(nn.Module):
-        """
-        Wrapper for the attention mechanism to capture activations.
-        """
-        def __init__(self, attn):
-            super().__init__()
-            self.attn = attn
-            self.activations = None
-
-        def forward(self, *args, **kwargs):
-            output = self.attn(*args, **kwargs)
-            self.activations = output[0]
-            return output
-
-    class BlockOutputWrapper(nn.Module):
-        """
-        Wrapper for model block to handle activations and transformations.
-        """
-        def __init__(self, block, unembed_matrix, norm, tokenizer):
-            super().__init__()
-            self.block = block
-            self.unembed_matrix = unembed_matrix
-            self.norm = norm
-            self.tokenizer = tokenizer
-
-            self.block.self_attn = AttnWrapper(self.block.self_attn)
-            self.post_attention_layernorm = self.block.post_attention_layernorm
-
-            self.attn_out_unembedded = None
-            self.intermediate_resid_unembedded = None
-            self.mlp_out_unembedded = None
-            self.block_out_unembedded = None
-
-            self.activations = None
-            self.add_activations = None
-            self.after_position = None
-
-            self.save_internal_decodings = False
-
-            self.calc_dot_product_with = None
-            self.dot_products = []
-
-        def reset(self):
-            self.add_activations = None
-            self.activations = None
-            self.block.self_attn.activations = None
-            self.after_position = None
-            self.calc_dot_product_with = None
-            self.dot_products = []
 
     class LlamaLM:
         """
@@ -123,8 +74,7 @@ def get_model(model_name='meta-llama/Llama-2-7b-chat-hf', control_activate_name=
 
             self.bias_cache = []
             for i, layer in enumerate(self.model.model.layers):
-                self.model.model.layers[i] = BlockOutputWrapper(layer, self.model.lm_head, self.model.model.norm, self.tokenizer)
-                self.bias_cache.append(deepcopy(self.model.model.layers[i].block.self_attn.attn.o_proj.bias))
+                self.bias_cache.append(deepcopy(self.model.model.layers[i].self_attn.o_proj.bias))
 
         def _load_large_model(self, model_name):
             """
@@ -243,8 +193,7 @@ def get_model(model_name='meta-llama/Llama-2-7b-chat-hf', control_activate_name=
             Resets all internal states and biases of the model.
             """
             for i, layer in enumerate(self.model.model.layers):
-                layer.reset()
-                self.model.model.layers[i].block.self_attn.attn.o_proj.bias = self.bias_cache[i]
+                self.model.model.layers[i].self_attn.o_proj.bias = self.bias_cache[i]
 
         def get_activations(self, all_head_wise_activations, labels, num_to_intervene=48):
             def get_top_heads(separated_activations, separated_labels, num_layers, num_heads, num_to_intervene):
@@ -311,11 +260,11 @@ def get_model(model_name='meta-llama/Llama-2-7b-chat-hf', control_activate_name=
                     activations = tuning_activations[:, layer, head, :]  # batch x 128
                     proj_vals = activations @ direction.T
                     proj_val_std = np.std(proj_vals)
-                    interventions[f"model.layers.{layer}.block.self_attn.attn.head_out"].append(
+                    interventions[f"model.layers.{layer}.self_attn.head_out"].append(
                         (head, direction.squeeze(), proj_val_std))
                 for layer, head in top_heads:
-                    interventions[f"model.layers.{layer}.block.self_attn.attn.head_out"] = sorted(
-                        interventions[f"model.layers.{layer}.block.self_attn.attn.head_out"], key=lambda x: x[0])
+                    interventions[f"model.layers.{layer}.self_attn.head_out"] = sorted(
+                        interventions[f"model.layers.{layer}.self_attn.head_out"], key=lambda x: x[0])
 
                 return interventions
 
@@ -407,8 +356,8 @@ def get_model(model_name='meta-llama/Llama-2-7b-chat-hf', control_activate_name=
                 return all_prompts
 
             def get_llama_activations_bau(model, prompt):
-                HEADS = [f"model.layers.{i}.block.self_attn.attn.head_out" for i in range(model.config.num_hidden_layers)]
-                MLPS = [f"model.layers.{i}.block.mlp" for i in range(model.config.num_hidden_layers)]
+                HEADS = [f"model.layers.{i}.self_attn.head_out" for i in range(model.config.num_hidden_layers)]
+                MLPS = [f"model.layers.{i}.mlp" for i in range(model.config.num_hidden_layers)]
 
                 with torch.no_grad():
                     prompt = prompt.to(model.device)
