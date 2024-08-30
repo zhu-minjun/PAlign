@@ -23,16 +23,16 @@ from einops import rearrange
 import pickle
 from functools import partial
 from torch.utils.data import Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from tqdm.rich import tqdm
 import matplotlib
 from baukit import Trace, TraceDict
-from PAlign.modeling_llama import LlamaForCausalLM
+
 from copy import deepcopy
 
-def get_model(model_name='meta-llama/Llama-2-7b-chat-hf', control_activate_name=None, control_layer=None, gamma=None, adapter=None):
+def get_model(model_name='meta-llama/Llama-2-7b-chat-hf', use_bit_4=False, adapter=None):
     """
     Loads and sets up the Meta-LLaMA model for inference and activation handling.
 
@@ -49,12 +49,20 @@ def get_model(model_name='meta-llama/Llama-2-7b-chat-hf', control_activate_name=
     """
 
 
-    class LlamaLM:
+    class PASLM:
         """
         Main class for loading, configuring, and interacting with the Meta-LLaMA model.
         """
         def __init__(self):
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.config = AutoConfig.from_pretrained(model_name)
+            if self.config.architectures[0] == 'MistralForCausalLM':
+                from PAlign.modeling_mistral import MistralForCausalLM as ModelForCausalLM
+            elif self.config.architectures[0] == 'LlamaForCausalLM':
+                from PAlign.modeling_llama import LlamaForCausalLM as ModelForCausalLM
+            else:
+                print('PAS not implemented yet for {}.'.format(self.config.architectures[0]))
+
             if adapter:
                 if 'ppo' in adapter:
                     load_model_name = adapter
@@ -67,20 +75,20 @@ def get_model(model_name='meta-llama/Llama-2-7b-chat-hf', control_activate_name=
                 load_adapter = None
             self.model_file = load_model_name
 
-            if '70B' in self.model_file:
-                self._load_large_model(load_model_name)
+            if use_bit_4:
+                self._load_large_model(load_model_name,ModelForCausalLM)
             else:
-                self._load_standard_model(load_model_name, load_adapter)
+                self._load_standard_model(load_model_name, load_adapter,ModelForCausalLM)
 
             self.bias_cache = []
             for i, layer in enumerate(self.model.model.layers):
                 self.bias_cache.append(deepcopy(self.model.model.layers[i].self_attn.o_proj.bias))
 
-        def _load_large_model(self, model_name):
+        def _load_large_model(self, model_name,ModelForCausalLM):
             """
             Loads the large variant of the Meta-LLaMA model (70B).
             """
-            model = LlamaForCausalLM.from_pretrained(model_name, low_cpu_mem_usage=True, torch_dtype=torch.bfloat16)
+            model = ModelForCausalLM.from_pretrained(model_name, low_cpu_mem_usage=True, torch_dtype=torch.bfloat16)
             self.weight_cache = [deepcopy(layer.self_attn.o_proj.weight).cuda() for layer in model.model.layers]
             model = None
             torch.cuda.empty_cache()
@@ -91,22 +99,22 @@ def get_model(model_name='meta-llama/Llama-2-7b-chat-hf', control_activate_name=
                 bnb_4bit_use_double_quant=True,
                 bnb_4bit_quant_type='nf4'
             )
-            self.model = LlamaForCausalLM.from_pretrained(model_name, low_cpu_mem_usage=True, quantization_config=quantization_config, torch_dtype=torch.bfloat16)
+            self.model = ModelForCausalLM.from_pretrained(model_name, low_cpu_mem_usage=True, quantization_config=quantization_config, torch_dtype=torch.bfloat16)
 
-        def _load_standard_model(self, model_name, adapter):
+        def _load_standard_model(self, model_name, adapter,ModelForCausalLM):
             """
             Loads the standard variant of the Meta-LLaMA model.
             """
             if 'ppo' in model_name:
-                self.model = LlamaForCausalLM.from_pretrained(model_name, device_map='cuda')
+                self.model = ModelForCausalLM.from_pretrained(model_name, device_map='cuda')
             else:
-                self.model = LlamaForCausalLM.from_pretrained(model_name).half().cuda()
+                self.model = ModelForCausalLM.from_pretrained(model_name).half().cuda()
             if adapter:
                 self.model.load_adapter(adapter)
             self.model.eval()
             self.device = self.model.device
 
-        def generate(self, model, text, max_length=512, max_new_tokens=None):
+        def generate(model, text, max_length=512, max_new_tokens=None):
             """
             Generates responses based on the input text using the model.
 
@@ -250,7 +258,7 @@ def get_model(model_name='meta-llama/Llama-2-7b-chat-hf', control_activate_name=
 
                 interventions = {}
                 for layer, head in top_heads:
-                    interventions[f"model.layers.{layer}.block.self_attn.attn.head_out"] = []
+                    interventions[f"model.layers.{layer}.self_attn.head_out"] = []
                 for layer, head in top_heads:
                     if com_directions is not None:
                         direction = com_directions[layer_head_to_flattened_idx(layer, head, num_heads)]
@@ -400,14 +408,14 @@ def get_model(model_name='meta-llama/Llama-2-7b-chat-hf', control_activate_name=
                 displacement = np.zeros((num_heads, int(self.model.model.config.hidden_size / num_heads)))
                 for head_no, head_vec, std in list_int_vec:
                     displacement[head_no] = alpha * std * head_vec
-                device = self.model.model.layers[layer_no].block.self_attn.attn.o_proj.weight.device.index
+                device = self.model.model.layers[layer_no].self_attn.o_proj.weight.device.index
                 displacement = torch.tensor(rearrange(displacement, 'h d -> (h d)'), device=device)
                 if '70B' in self.model_file:
                     bias_tobe = F.linear(displacement.to(torch.bfloat16), self.weight_cache[layer_no]).to(device)
                 else:
-                    bias_tobe = F.linear(displacement.to(torch.float16), self.model.model.layers[layer_no].block.self_attn.attn.o_proj.weight).to(device)
-                self.model.model.layers[layer_no].block.self_attn.attn.o_proj.bias = torch.nn.parameter.Parameter(bias_tobe)
+                    bias_tobe = F.linear(displacement.to(torch.float16), self.model.model.layers[layer_no].self_attn.o_proj.weight).to(device)
+                self.model.model.layers[layer_no].self_attn.o_proj.bias = torch.nn.parameter.Parameter(bias_tobe)
 
-    model = LlamaLM()
+    model = PASLM()
     model.reset_all()
     return model, model.tokenizer
