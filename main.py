@@ -8,7 +8,7 @@ from tqdm import tqdm, trange
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import re
 from pprint import pprint
-from PAlign.llama_pas import get_model
+from PAlign.pas import get_model
 from copy import deepcopy
 from baseline_utils import process_answers, process_few_shot, calc_mean_and_var, process_personality_prompt
 
