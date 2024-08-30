@@ -8,7 +8,7 @@ from tqdm import tqdm, trange
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import re
 from pprint import pprint
-from PAlign.pas import get_model
+from PAlign.llama_pas import get_model
 from copy import deepcopy
 from baseline_utils import process_answers, process_few_shot, calc_mean_and_var, process_personality_prompt
 
@@ -30,7 +30,7 @@ SCORES_BACK = {
     0: 'Unknown'
 }
 
-system_prompt = "You are a helpful, honest and concise assistant."
+SYSTEM_PROMPT = "You are a helpful, honest and concise assistant."
 
 # Templates for personality assessment
 TEMPLATE = """Given a statement of you: "You {}."
@@ -75,8 +75,8 @@ def getItems(filename):
     Load data from files.
 
     Test-set.json: 300 samples for Test, if you need to load more, you can download from huggingface (https://huggingface.co/datasets/WestlakeNLP/PAPI-300K)
-    mpi_300_split.json: The original IPIP-NEO-300 questionnaire includes the IPIP-NEO-120 and the remaining 180 questions. 
-        Existing psychological research indicates that the IPIP-NEO-120 is sufficient to represent a person's personality traits. 
+    mpi_300_split.json: The original IPIP-NEO-300 questionnaire includes the IPIP-NEO-120 and the remaining 180 questions.
+        Existing psychological research indicates that the IPIP-NEO-120 is sufficient to represent a person's personality traits.
         Therefore, we first use the IPIP-NEO-120 to concretize a person's characteristics,
         and then divide the remaining 180 questions into a section that we ask the model to predict.
     IPIP-NEO-ItemKey.xls:  This is where we store the question text corresponding to each question ID (the original data only contains the ID part).
@@ -235,7 +235,7 @@ def process_pas(data, model, tokenizer, model_file):
                     personal_number += 2
 
         # Get activations for intervention
-        activate = model.get_activations(deepcopy(all_head_wise_activations), labels, num_to_intervene=24)
+        activate = model.get_activations(deepcopy(head_wise_activations), labels, num_to_intervene=24)
 
         # Test different activation levels
         result_cache = []
@@ -246,13 +246,19 @@ def process_pas(data, model, tokenizer, model_file):
                                      system_prompt=system_prompt_text, model_file=model_file)
 
             # Process answers and calculate results
-            result = process_answers(answers, sample['test'])
+            result = process_answers(answers, sample)
             result_cache.append(result)
 
         # Select the best result based on mean absolute error
-        best_result = min(result_cache, key=lambda x: sum(k[1] for k in x['mean_ver_abs']['mean']))
-        best_result['alpha'] = best_result  # Store the best alpha value
-        results.append(best_result)
+        scores = []
+        for p in result_cache:
+            score = sum([k[1] for k in p['mean_ver_abs']['mean']])
+            if str(score) == 'nan':
+                score = 1e6
+            scores.append(score)
+        rs = result_cache[np.array(scores).argmin()]
+        rs['alpha'] = result_cache[np.array(scores).argmin()]
+        results.append(rs)
 
     return results
 
@@ -351,7 +357,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="mode")
     parser.add_argument("--modes", default='PAS', help="Name of the user to greet")
-    parser.add_argument("--model_file", default='meta-llama/Meta-Llama-3-8B-Instruct', help="Name of the user to greet")
+    parser.add_argument("--model_file", default='/zhuminjun/model/Meta-Llama-3-8B-hf', help="Name of the user to greet")
     args = parser.parse_args()
 
     model_file = args.model_file
