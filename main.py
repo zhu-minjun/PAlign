@@ -310,7 +310,6 @@ def print_and_save_results(results, mode, model_file, dataset_set):
     # Add more details to the log
     log['mean'] = {'A': mean_A, 'C': mean_C, 'E': mean_E, 'N': mean_N, 'O': mean_O}
     log['std'] = {'A': std_A, 'C': std_C, 'E': std_E, 'N': std_N, 'O': std_O}
-    log['results'] = results
 
     # Save the log to a file
     log_filename = f'./log/{mode}_{model_file.split("/")[-1]}_{dataset_set}.json'
