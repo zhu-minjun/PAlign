@@ -1,14 +1,17 @@
 import json
+import logging
+import pickle
 from huggingface_hub import login
 import os
 import pandas as pd
 import torch
 import numpy as np
+from datetime import datetime
 from tqdm import tqdm, trange
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import re
 from pprint import pprint
-from PAlign.llama_pas import get_model
+from PAlign.pas import get_model
 from copy import deepcopy
 from baseline_utils import process_answers, process_few_shot, calc_mean_and_var, process_personality_prompt
 
@@ -55,7 +58,7 @@ def prompt_to_tokens(tokenizer, system_prompt, instruction, model_output, model_
                 {"role": "user", "content": instruction},
                 {"role": "assistant", "content": model_output}
             ]
-            return tokenizer.apply_chat_template(con)[:-5]
+            return tokenizer.apply_chat_template(con)[:-1]
         else:
             con = [
                 {"role": "system", "content": system_prompt},
@@ -88,11 +91,11 @@ def getItems(filename):
     return data, pd.read_excel(filename + '/IPIP-NEO-ItemKey.xls'), split_data['train_index'], split_data['test_index']
 
 
-def generateAnswer(tokenizer, model, dataset, template, scores=SCORES, system_prompt=SYSTEM_PROMPT, model_file=None):
+def generateAnswer(tokenizer, model, dataset, template, scores=SCORES, system_prompt=SYSTEM_PROMPT, model_file=None, raw_logger=None):
     """
     Generate answers using the model.
     """
-    batch_size = 3 if '70B' in model_file else 10
+    batch_size = 3
     questions = [item["text"].lower() for item in dataset]
     answers = []
 
@@ -105,9 +108,12 @@ def generateAnswer(tokenizer, model, dataset, template, scores=SCORES, system_pr
             )
             output_text = tokenizer.batch_decode(outputs)
             if 'llama-3' in model_file.lower():
-                answer = [text.split("<|end_header_id|>")[3] for text in output_text]
+                answer = [text.split("<|end_header_id|>")[-1] for text in output_text]
             else:
                 answer = [text.split("[/INST]")[-1] for text in output_text]
+            if raw_logger:
+                for i, ans in enumerate(answer):
+                    raw_logger.info(f"q={len(answers) + i} | {ans.strip()}")
             answers.extend(answer)
 
     return answers
@@ -184,7 +190,19 @@ def lmean(l):
     return sum(l) / len(l)
 
 
-def process_pas(data, model, tokenizer, model_file):
+def setup_raw_logger(output_dir='./reproduction'):
+    """Set up a dedicated file logger for raw model generations."""
+    os.makedirs(output_dir, exist_ok=True)
+    raw_logger = logging.getLogger('raw_generations')
+    raw_logger.setLevel(logging.INFO)
+    if not raw_logger.handlers:
+        fh = logging.FileHandler(os.path.join(output_dir, 'raw_generations.log'), mode='a')
+        fh.setFormatter(logging.Formatter('[%(asctime)s] %(message)s', datefmt='%Y-%m-%dT%H:%M:%S'))
+        raw_logger.addHandler(fh)
+    return raw_logger
+
+
+def process_pas(data, model, tokenizer, model_file, output_dir='./reproduction'):
     """
     Process data using Persona Activation Steering (PAS) method.
 
@@ -192,8 +210,27 @@ def process_pas(data, model, tokenizer, model_file):
     :param model: The language model to use
     :param tokenizer: The tokenizer for the model
     :param model_file: Path to the model file
+    :param output_dir: Directory for output files
     :return: List of results for each personality sample
     """
+    raw_logger = setup_raw_logger(output_dir)
+
+    # Set up resume directories
+    os.makedirs(os.path.join(output_dir, 'subject_results'), exist_ok=True)
+    progress_path = os.path.join(output_dir, 'pas_progress.jsonl')
+
+    # Load existing results for resume
+    results = [None] * len(data)
+    done_indices = set()
+    for idx in range(len(data)):
+        pkl_path = os.path.join(output_dir, 'subject_results', f'subject_{idx:04d}.pkl')
+        if os.path.exists(pkl_path):
+            with open(pkl_path, 'rb') as f:
+                results[idx] = pickle.load(f)
+            done_indices.add(idx)
+    if done_indices:
+        print(f"Resuming: {len(done_indices)} subjects already completed, skipping them.")
+
     # Prepare personal data for activation
     personal_data = []
     for personal in ['A', 'C', 'E', 'N', 'O']:
@@ -208,8 +245,10 @@ def process_pas(data, model, tokenizer, model_file):
     # Preprocess activation dataset
     all_head_wise_activations = model.preprocess_activate_dataset(personal_data)
 
-    results = []
     for index, sample in enumerate(tqdm(data)):
+        if index in done_indices:
+            continue
+
         model.reset_all()
 
         # Generate system prompt from training data
@@ -238,12 +277,18 @@ def process_pas(data, model, tokenizer, model_file):
         activate = model.get_activations(deepcopy(head_wise_activations), labels, num_to_intervene=24)
 
         # Test different activation levels
+        alpha_values = [0, 1, 2, 4, 6, 8]
         result_cache = []
-        for num in [0, 1, 2, 4, 6, 8]:
+        case_id = sample['test'][0]['case']
+        for num in alpha_values:
             model.reset_all()
             model.set_activate(activate, num)
+
+            raw_logger.info(f"=== subject={index} case={case_id} alpha={num} ===")
+
             answers = generateAnswer(tokenizer, model, data[0]['test'], TEMPLATE,
-                                     system_prompt=system_prompt_text, model_file=model_file)
+                                     system_prompt=system_prompt_text, model_file=model_file,
+                                     raw_logger=raw_logger)
 
             # Process answers and calculate results
             result = process_answers(answers, sample)
@@ -256,14 +301,38 @@ def process_pas(data, model, tokenizer, model_file):
             if str(score) == 'nan':
                 score = 1e6
             scores.append(score)
-        rs = result_cache[np.array(scores).argmin()]
-        rs['alpha'] = result_cache[np.array(scores).argmin()]
-        results.append(rs)
+        best_idx = int(np.array(scores).argmin())
+        rs = result_cache[best_idx]
+        rs['alpha'] = alpha_values[best_idx]
+        results[index] = rs
 
+        # Save per-subject pickle for resume
+        pkl_path = os.path.join(output_dir, 'subject_results', f'subject_{index:04d}.pkl')
+        with open(pkl_path, 'wb') as f:
+            pickle.dump(rs, f)
+
+        # Append progress line
+        progress_entry = {
+            'index': index,
+            'case': case_id,
+            'alpha': alpha_values[best_idx],
+            'score_sum': scores[best_idx],
+            'mean_abs': {k: v for k, v in rs['mean_ver_abs']['mean']},
+            'timestamp': datetime.now().isoformat()
+        }
+        with open(progress_path, 'a') as f:
+            f.write(json.dumps(progress_entry) + '\n')
+
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Subject {index}/{len(data)} done | "
+              f"case={case_id} | best_alpha={alpha_values[best_idx]} | "
+              f"score_sum={scores[best_idx]:.3f}")
+
+    # Filter out any None entries (shouldn't happen if all completed)
+    results = [r for r in results if r is not None]
     return results
 
 
-def print_and_save_results(results, mode, model_file, dataset_set):
+def print_and_save_results(results, mode, model_file, dataset_set, output_dir='./reproduction'):
     """
     Print and save the final results of the personality assessment.
 
@@ -312,14 +381,15 @@ def print_and_save_results(results, mode, model_file, dataset_set):
     log['std'] = {'A': std_A, 'C': std_C, 'E': std_E, 'N': std_N, 'O': std_O}
 
     # Save the log to a file
-    log_filename = f'./log/{mode}_{model_file.split("/")[-1]}_{dataset_set}.json'
+    os.makedirs(output_dir, exist_ok=True)
+    log_filename = os.path.join(output_dir, f'{mode}_{model_file.split("/")[-1]}_{dataset_set}.json')
     with open(log_filename, 'w', encoding='utf-8') as f:
         json.dump(log, f, ensure_ascii=False, indent=4)
 
     print(f"Results saved to {log_filename}")
 
 
-def main(mode=None, model_file='', model=None, tokenizer=None, dataset_set='OOD'):
+def main(mode=None, model_file='', model=None, tokenizer=None, dataset_set='OOD', num_subjects=0, output_dir='./reproduction'):
     """
     Main function to run personality assessment.
     """
@@ -328,6 +398,10 @@ def main(mode=None, model_file='', model=None, tokenizer=None, dataset_set='OOD'
     print(f"Current Prompt: {TEMPLATE}")
     results = []
     data = from_index_to_data(train_index, test_index, text_file, dataset, dataset_set)
+
+    if num_subjects > 0:
+        data = data[:num_subjects]
+        print(f"Using {num_subjects} subjects (out of {len(dataset)} total)")
 
     if mode == 'NO_CHANGE':
         # Process data without any changes
@@ -345,22 +419,26 @@ def main(mode=None, model_file='', model=None, tokenizer=None, dataset_set='OOD'
 
     elif mode == 'PAS':
         # Process data using PAS (Personality Assessment System)
-        results = process_pas(data, model, tokenizer, model_file)
+        results = process_pas(data, model, tokenizer, model_file, output_dir=output_dir)
 
     # Print and save final results
-    print_and_save_results(results, mode, model_file, dataset_set)
+    print_and_save_results(results, mode, model_file, dataset_set, output_dir=output_dir)
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="mode")
-    parser.add_argument("--modes", default='PAS', help="Name of the user to greet")
-    parser.add_argument("--model_file", default='meta-llama/Meta-Llama-3-8B-Instruct', help="Name of the user to greet")
+    parser = argparse.ArgumentParser(description="Personality Alignment of LLMs")
+    parser.add_argument("--modes", default='PAS', help="Assessment mode (PAS, NO_CHANGE, few-shot, personality_prompt)")
+    parser.add_argument("--model_file", default='meta-llama/Meta-Llama-3-8B-Instruct', help="HuggingFace model name")
+    parser.add_argument("--num_subjects", type=int, default=0, help="Number of subjects to process (0=all)")
+    parser.add_argument("--output_dir", default='./reproduction', help="Output directory for results")
     args = parser.parse_args()
 
     model_file = args.model_file
     modes = [args.modes]
+    num_subjects = args.num_subjects
+    output_dir = args.output_dir
 
     model, tokenizer = get_model(model_file)
     if 'llama-3' in model_file.lower():
@@ -368,4 +446,5 @@ if __name__ == "__main__":
         tokenizer.padding_side = 'left'
 
     for mode in modes:
-        main(mode=mode, model_file=model_file, model=model, tokenizer=tokenizer, dataset_set='OOD')
+        main(mode=mode, model_file=model_file, model=model, tokenizer=tokenizer,
+             dataset_set='OOD', num_subjects=num_subjects, output_dir=output_dir)

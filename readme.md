@@ -16,12 +16,17 @@ In the evolving landscape of AI, personality alignment stands as a pivotal advan
 
 ## Installation
 
-
-Install the required packages:
-
 ```bash
+# Create environment and install PyTorch (adjust CUDA version as needed)
+conda create -n palign python=3.11 -y
+conda activate palign
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# Install the project and all dependencies
 pip install .
 ```
+
+See [REPRODUCTION_GUIDE.md](REPRODUCTION_GUIDE.md) for a detailed walkthrough of reproducing the paper results.
 
 ## Data: PAPI Dataset
 
